@@ -1,0 +1,16 @@
+[project]
+name = "nss-safedata-pipeline"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "diffprivlib==0.6.1",
+    "fastparquet==2024.5.0",
+    "numpy==1.26.4",
+    "pandas==2.2.2",
+    "pyarrow==16.1.0",
+    "pytest==8.2.2",
+    "pyyaml==6.0.1",
+    "sdv==1.1.0",
+]
