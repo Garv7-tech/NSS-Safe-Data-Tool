@@ -1,0 +1,244 @@
+# NSS Data Ingestion Configuration - Dynamic for All NSS Surveys
+# This config supports multiple survey types and file formats
+
+# Global settings
+encoding: 'utf-8'
+na_values: ['', 'NA', 'NULL', 'na', 'null', ' ', '  ', '...', '-', 'NR', 'nr']
+chunk_size: 10000
+output_format: 'parquet'
+
+# Survey type configurations - Extensible for all NSS surveys
+surveys:
+  # Periodic Labour Force Survey (PLFS) - Current example
+  PLFS:
+    survey_name: "Periodic Labour Force Survey"
+    file_types:
+      household:
+        file_patterns: ['*hhv*.csv', '*hh*.csv', '*household*.csv']
+        required_columns:
+          - 'Panel'
+          - 'Sample_Household_Number' 
+          - 'State_Ut_Code'
+          - 'District_Code'
+        identifier_columns:
+          - 'Panel'
+          - 'Sample_Household_Number'
+          - 'State_Ut_Code'
+          - 'District_Code'
+        dtypes:
+          Panel: 'category'
+          State_Ut_Code: 'int16'
+          District_Code: 'int16'
+          Household_Size: 'int8'
+          Monthly_Consumer_Expenditure: 'float32'
+          Survey_Date: 'object'
+        date_columns: ['Survey_Date']
+        missing_value_rules:
+          Household_Size: 'fill_mode'
+          Monthly_Consumer_Expenditure: 'fill_zero'
+        range_validation:
+          Household_Size: {min: 1, max: 20}
+          Monthly_Consumer_Expenditure: {min: 0, max: 100000}
+        categorical_mappings:
+          Sector: {1: 'Rural', 2: 'Urban'}
+          
+      person:
+        file_patterns: ['*perv*.csv', '*per*.csv', '*person*.csv', '*individual*.csv']
+        required_columns:
+          - 'Panel'
+          - 'Sample_Household_Number'
+          - 'Person_Serial_No'
+          - 'Age'
+          - 'Sex'
+        identifier_columns:
+          - 'Panel'
+          - 'Sample_Household_Number' 
+          - 'Person_Serial_No'
+        dtypes:
+          Panel: 'category'
+          Person_Serial_No: 'int8'
+          Age: 'int8'
+          Sex: 'int8'
+          Principal_Status_Code: 'int16'
+        missing_value_rules:
+          Age: 'drop_rows'
+          Sex: 'drop_rows'
+        categorical_mappings:
+          Sex: {1: 'Male', 2: 'Female'}
+          Marital_Status: {1: 'Never_married', 2: 'Currently_married', 3: 'Widowed', 4: 'Divorced_separated'}
+        range_validation:
+          Age: {min: 0, max: 120}
+
+  # Household Consumer Expenditure Survey (HCES)
+  HCES:
+    survey_name: "Household Consumption Expenditure Survey"
+    file_types:
+      household:
+        file_patterns: ['*hhc*.csv', '*household*.csv', '*hh*.csv']
+        required_columns:
+          - 'HHID'
+          - 'State_Code'
+          - 'District'
+          - 'Stratum'
+        identifier_columns:
+          - 'HHID'
+          - 'State_Code' 
+          - 'District'
+          - 'Stratum'
+        dtypes:
+          State_Code: 'int8'
+          District: 'int16'
+          MPCE: 'float32'
+          Household_Size: 'int8'
+        categorical_mappings:
+          Sector: {1: 'Rural', 2: 'Urban'}
+          Social_Group: {1: 'ST', 2: 'SC', 3: 'OBC', 9: 'Others'}
+        range_validation:
+          Household_Size: {min: 1, max: 25}
+          MPCE: {min: 0, max: 50000}
+          
+      consumption:
+        file_patterns: ['*cons*.csv', '*expenditure*.csv', '*item*.csv']
+        required_columns: ['HHID', 'Item_Code', 'Value']
+        identifier_columns: ['HHID', 'Item_Code']
+        dtypes:
+          Item_Code: 'int16'
+          Value: 'float32'
+          Quantity: 'float32'
+
+  # Annual Survey of Industries (ASI)
+  ASI:
+    survey_name: "Annual Survey of Industries"
+    file_types:
+      enterprise:
+        file_patterns: ['*factory*.csv', '*enterprise*.csv', '*industry*.csv']
+        required_columns:
+          - 'DSL'
+          - 'State'
+          - 'District' 
+          - 'NIC_Code'
+        identifier_columns: ['DSL', 'State', 'District']
+        dtypes:
+          State: 'int8'
+          District: 'int16'
+          NIC_Code: 'int16'
+          Total_Persons_Worked: 'int32'
+          Gross_Value_Added: 'float64'
+        range_validation:
+          Total_Persons_Worked: {min: 1, max: 10000}
+
+  # Employment and Unemployment Survey (EUS) - Legacy
+  EUS:
+    survey_name: "Employment and Unemployment Survey"
+    file_types:
+      household:
+        file_patterns: ['*hhv*.csv', '*household*.csv']
+        required_columns: ['HHID', 'State', 'District', 'NSS_Region']
+        identifier_columns: ['HHID', 'State', 'District']
+        dtypes:
+          State: 'int8'
+          District: 'int16'
+          NSS_Region: 'int16'
+        categorical_mappings:
+          Sector: {1: 'Rural', 2: 'Urban'}
+          
+      person:
+        file_patterns: ['*perv*.csv', '*person*.csv']
+        required_columns: ['HHID', 'Person_No', 'Age', 'Sex']
+        identifier_columns: ['HHID', 'Person_No']
+        dtypes:
+          Person_No: 'int8'
+          Age: 'int8'
+          Sex: 'int8'
+        categorical_mappings:
+          Sex: {1: 'Male', 2: 'Female'}
+
+# Default survey type (can be overridden)
+default_survey: 'PLFS'
+
+# Common merge configurations across surveys
+merge_strategies:
+  household_person:
+    default_keys: ['HHID', 'State_Code', 'District']
+    survey_specific:
+      PLFS: ['Panel', 'Sample_Household_Number', 'State_Ut_Code', 'District_Code']
+      HCES: ['HHID', 'State_Code', 'District']
+      ASI: ['DSL', 'State', 'District'] 
+      EUS: ['HHID', 'State', 'District']
+      
+  household_consumption:
+    default_keys: ['HHID']
+    survey_specific:
+      HCES: ['HHID']
+
+# Common analysis columns across surveys  
+analysis_columns:
+  core_identifiers:
+    PLFS: ['Panel', 'Sample_Household_Number', 'Person_Serial_No']
+    HCES: ['HHID', 'Person_Serial_No']
+    ASI: ['DSL', 'Factory_Serial_No']
+    EUS: ['HHID', 'Person_No']
+    
+  demographics:
+    common: ['Age', 'Sex', 'Marital_Status', 'Social_Group']
+    survey_specific:
+      PLFS: ['Age', 'Sex', 'Marital_Status', 'Social_Group', 'General_Education_Level']
+      HCES: ['Age', 'Sex', 'Marital_Status', 'Social_Group']
+      
+  household_characteristics:
+    common: ['Household_Size', 'Sector', 'State_Code']
+    survey_specific:
+      PLFS: ['Household_Size', 'Household_Type', 'Monthly_Consumer_Expenditure']
+      HCES: ['Household_Size', 'MPCE', 'Religion']
+      
+  employment:
+    PLFS: ['Principal_Status_Code', 'Principal_Industry_Code', 'Principal_Occupation_Code']
+    EUS: ['Principal_Activity_Status', 'Principal_Industry', 'Principal_Occupation']
+    
+  expenditure:
+    HCES: ['Item_Code', 'Value', 'Quantity', 'Type']
+
+# Auto-detection rules for survey type
+survey_detection:
+  file_patterns:
+    PLFS: ['*perv*.csv', '*hhv*.csv', 'PLFS', 'plfs']
+    HCES: ['*cons*.csv', '*expenditure*.csv', 'HCES', 'hces'] 
+    ASI: ['*factory*.csv', '*industry*.csv', 'ASI', 'asi']
+    EUS: ['*block*.csv', 'EUS', 'eus']
+    
+  column_signatures:
+    PLFS: ['Panel', 'Sample_Household_Number', 'Person_Serial_No']
+    HCES: ['HHID', 'MPCE', 'Item_Code']
+    ASI: ['DSL', 'NIC_Code', 'Total_Persons_Worked']
+    EUS: ['NSS_Region', 'FOD_Region']
+
+# File processing settings
+file_processing:
+  max_file_size_mb: 500
+  supported_formats: ['csv', 'txt', 'dat']
+  auto_detect_delimiter: true
+  delimiter_candidates: [',', '|', '\t', ';']
+  
+# Data quality checks
+quality_checks:
+  duplicate_detection:
+    enabled: true
+    key_combinations: ['identifier_columns']
+    
+  missing_data_threshold: 0.9  # Flag if >90% missing in any column
+  
+  outlier_detection:
+    enabled: true
+    methods: ['iqr', 'z_score']
+    
+  referential_integrity:
+    enabled: true
+    check_merge_keys: true
+
+# Output settings  
+output:
+  save_intermediate: true
+  intermediate_formats: ['parquet']
+  final_formats: ['parquet', 'csv']
+  include_metadata: true
+  create_data_dictionary: true
