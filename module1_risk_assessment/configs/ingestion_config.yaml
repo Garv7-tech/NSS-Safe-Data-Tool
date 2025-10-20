@@ -242,3 +242,40 @@ output:
   final_formats: ['parquet', 'csv']
   include_metadata: true
   create_data_dictionary: true
+
+
+# ===============================================================
+# == MODULE 1 & 2 CONFIGURATIONS START HERE ==
+# ===============================================================
+
+# Risk Assessment Configuration (For Module 1)
+risk_assessment:
+  quasi_identifier_candidates:
+    common:
+      - 'Age'
+      - 'Sex'
+      - 'Marital_Status'
+      - 'Social_Group'
+      - 'State_Ut_Code'
+      - 'District_Code'
+      - 'Sector'
+    survey_specific:
+      PLFS:
+        - 'General_Education_Level'
+        - 'Principal_Industry_Code'
+      HCES:
+        - 'Religion'
+
+# Privacy Enhancement Configuration (For Module 2)
+privacy_enhancement:
+  # Choose the strategy: 'k_anonymity', 'synthetic_data', 'differential_privacy'
+  privacy_strategy: 'k_anonymity'
+
+  # Goals for the anonymization engine
+  goals:
+    k_anonymity:
+      target_k: 10
+      max_info_loss: 0.25 # Max 25% info loss allowed (using NCP metric)
+    
+    differential_privacy:
+      epsilon: 1.0
