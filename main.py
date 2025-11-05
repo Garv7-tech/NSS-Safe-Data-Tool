@@ -1,225 +1,353 @@
 """
 Main entry point for the NSS SafeData Pipeline.
 This script orchestrates the full pipeline:
+0. Config Auto-Generation (NEW)
 1. Data Ingestion (Parsing, Cleaning, Merging)
-2. Risk Assessment (Module 1: QI Detection & Risk Scoring)
+2. Risk Assessment (Module 1: QI Detection & Linkage Attack)
 3. Privacy Enhancement (Module 2: Anonymization)
 4. Utility Assessment (Module 3: Utility Measurement)
 5. Report Generation (Module 4: Reporting)
 """
 
 import argparse
-import os
-import json
+import logging
+import pandas as pd
+import sys
 import yaml
 from pathlib import Path
-import pandas as pd
-import logging
-from pydantic import ValidationError
+from typing import Dict, Any, Optional
 
-# --- Imports from Module 1 ---
-from module1_risk_assessment.data_ingestion.file_parser import NSSCSVParser
-from module1_risk_assessment.data_ingestion.data_cleaner import NSSDataCleaner
-from module1_risk_assessment.data_ingestion.data_merger import NSSDataMerger
-from module1_risk_assessment.data_ingestion.survey_detector import NSSConfigResolver, NSSSurveyDetector
-from module1_risk_assessment.data_ingestion.utils import setup_logging, get_memory_usage, create_output_directory
-from module1_risk_assessment.risk_assessor import NSSRiskAssessor
+# --- NEW: Module 0 Imports ---
+# (Create this new folder and files from my previous response)
+try:
+    from module0_config_generation.schema_detector import SchemaDetector
+    from module0_config_generation.config_writer import ConfigWriter
+except ImportError:
+    print("Warning: module0_config_generation not found. Auto-config will be skipped.")
+    SchemaDetector = None
+    ConfigWriter = None
 
-# --- Imports from Module 2 ---
-from module2_privacy_enhancement.privacy_enhancer import NSSPrivacyEnhancer
+# --- Module 1 Imports ---
+from module1_risk_assessment.data_ingestion.survey_detector import SurveyDetector
+from module1_risk_assessment.data_ingestion.file_parser import FileParser
+from module1_risk_assessment.data_ingestion.data_cleaner import DataCleaner
+from module1_risk_assessment.data_ingestion.data_merger import DataMerger
+from module1_risk_assessment.risk_assessor import RiskAssessor
 
-# --- Imports from Module 3 ---
-from module3_utility_assessment.utility_assessor import NSSUtilityAssessor
+# --- Module 2 Imports ---
+from module2_privacy_enhancement.privacy_enhancer import PrivacyEnhancer
 
-# --- Imports from Module 4 ---
-from module4_reporting.config_models import MasterConfig
-from module4_reporting.report_generator import NSSReportGenerator
+# --- Module 3 Imports ---
+from module3_utility_assessment.utility_assessor import UtilityAssessor
 
+# --- Module 4 Imports ---
+from module4_reporting.report_generator import ReportGenerator
+from module4_reporting.config_models import load_pipeline_config, PipelineConfig
 
-def run_full_pipeline(input_dir: str, output_dir: str, config_path: str, survey_type: str = None):
+# Setup logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="[%(asctime)s] [%(levelname)s] [%(name)s] - %(message)s",
+    handlers=[
+        logging.StreamHandler(sys.stdout)
+    ]
+)
+logger = logging.getLogger(__name__)
+
+# --- NEW STAGE 0 ---
+def run_stage_0_auto_config(
+    input_dir: Path, 
+    config_path: Path, 
+    parser: FileParser,
+    detector: SurveyDetector
+) -> bool:
     """
-    Runs the complete data processing, risk assessment, privacy enhancement, and utility pipeline.
+    NEW STAGE 0: Auto-detects schema for unknown surveys and updates config.
+    Returns True if config was updated, False otherwise.
     """
-
-    # Use the logging setup from the utils
-    logger = setup_logging(__name__)
-    logger.info("==================================================")
-    logger.info("      === STARTING NSS SAFEDATA PIPELINE ===      ")
-    logger.info("==================================================")
-
-    try:
-        # --- STAGE 0: CONFIGURATION AND SETUP ---
-        logger.info("--- STAGE 0: CONFIGURATION AND SETUP ---")
-        try:
-            with open(config_path, 'r') as f:
-                full_config = yaml.safe_load(f)
+    logger.info("--- STAGE 0: CONFIGURATION AUTO-DETECTION ---")
+    
+    if ConfigWriter is None or SchemaDetector is None:
+        logger.warning("module0_config_generation not found. Skipping auto-config.")
+        return False
+        
+    config_updated = False
+    
+    # Check all files in the input directory
+    all_files = list(input_dir.glob('*.csv')) + list(input_dir.glob('*.dta'))
+    if not all_files:
+        logger.warning(f"No data files found in {input_dir}. Skipping auto-config.")
+        return False
+        
+    writer = ConfigWriter(config_path)
+    writer.load_config() # Load the existing config
+    
+    for file_path in all_files:
+        # Check if this survey is *already known*
+        survey_type, _ = detector.detect_survey(file_path.name, file_path)
+        
+        # If it's 'default_survey', it means it was not recognized
+        if survey_type == 'default_survey':
+            logger.warning(f"Found unknown survey file: {file_path.name}. Attempting auto-detection...")
             
-            # [NEW] Validate the entire configuration using Pydantic
-            master_config = MasterConfig(**full_config)
-            logger.info("Master configuration file successfully loaded and validated.")
+            try:
+                # 1. Read the file
+                df = parser.parse_file(file_path)
+                
+                # 2. Detect its schema
+                # We'll use the file name as the survey name
+                new_survey_name = file_path.stem.split('_')[0] 
+                if not new_survey_name or new_survey_name == '*':
+                    new_survey_name = 'new_survey'
+                    
+                schema_detector = SchemaDetector(df, new_survey_name)
+                new_schema = schema_detector.infer_schema()
+                
+                # 3. Write new schema to config file
+                writer.add_new_survey(
+                    survey_name=new_survey_name,
+                    schema=new_schema,
+                    file_pattern=f"*{file_path.stem}*" # Add a pattern to recognize it next time
+                )
+                config_updated = True
+                
+            except Exception as e:
+                logger.error(f"Failed to auto-detect schema for {file_path.name}: {e}", exc_info=True)
+                
+    if config_updated:
+        writer.write_config()
+        logger.info("ingestion_config.yaml has been updated with new surveys.")
+    else:
+        logger.info("No new surveys found. Config file is unchanged.")
         
-        except ValidationError as e:
-            logger.error(f"Configuration validation failed for {config_path}: \n{e}")
-            return
-        except Exception as e:
-            logger.error(f"Failed to load configuration file from {config_path}: {e}")
-            return
+    return config_updated
 
-        # Auto-detect survey type if not provided
-        if not survey_type:
-            logger.info("No survey type provided, attempting auto-detection...")
-            detector = NSSSurveyDetector(master_config.model_dump())
-            survey_type = detector.detect_survey_type(input_dir)
-        logger.info(f"Using Survey Type: {survey_type}")
 
-        # Resolve the configuration for the detected survey
-        resolver = NSSConfigResolver(master_config.model_dump())
-        resolved_config = resolver.resolve_config_for_survey(survey_type)
-        resolved_config['survey_type_detected'] = survey_type
-        logger.info("Configuration resolved for survey.")
-
-        # --- STAGE 1: DATA INGESTION AND CLEANING ---
-        logger.info("--- STAGE 1: DATA INGESTION ---")
-
-        # Initialize data ingestion components
-        # Note: This assumes constructors for Parser/Cleaner/Merger
-        # are updated to take the resolved_config dictionary.
-        parser = NSSCSVParser(resolved_config) 
-        cleaner = NSSDataCleaner(resolved_config)
-        merger = NSSDataMerger(resolved_config)
+# --- STAGE 1 ---
+def run_stage_1_data_ingestion(
+    input_dir: Path, 
+    config: PipelineConfig,
+    detector: SurveyDetector
+) -> Optional[pd.DataFrame]:
+    """STAGE 1: Detects, parses, cleans, and merges survey data."""
+    logger.info("--- STAGE 1: DATA INGESTION ---")
+    
+    try:
+        # 1. Detect Survey
+        # For simplicity, we'll assume one survey type per directory
+        # A more complex setup would group files by detected type
+        all_files = list(input_dir.glob('*.csv')) + list(input_dir.glob('*.dta'))
+        if not all_files:
+            logger.error("No data files found in input directory.")
+            return None
+            
+        first_file = all_files[0]
+        survey_type, survey_config_dict = detector.detect_survey(first_file.name, first_file)
         
-        file_types = resolved_config.get('file_types', {})
-        household_patterns = file_types.get('household', {}).get('file_patterns', [])
-        household_files = [f for pattern in household_patterns for f in Path(input_dir).glob(pattern)]
-        if not household_files:
-            raise FileNotFoundError(f"No household files found in {input_dir} with patterns: {household_patterns}")
-        household_df = parser.read_csv_file(str(household_files[0]), 'household')
-        household_df = cleaner.clean_dataframe(household_df, 'household')
-
-        person_patterns = file_types.get('person', {}).get('file_patterns', [])
-        person_files = [f for pattern in person_patterns for f in Path(input_dir).glob(pattern)]
-        if not person_files:
-            raise FileNotFoundError(f"No person files found in {input_dir} with patterns: {person_patterns}")
-        person_df = parser.read_csv_file(str(person_files[0]), 'person')
-        person_df = cleaner.clean_dataframe(person_df, 'person')
-
-        logger.info("Merging household and person data...")
-        merged_df = merger.merge_household_person_data(household_df, person_df)
-        analysis_df = merger.create_analysis_ready_dataset(merged_df)
-        logger.info(f"Data ingestion complete. Analysis dataset shape: {analysis_df.shape}")
-
-        # --- STAGE 2: RISK ASSESSMENT (MODULE 1) ---
-        logger.info("--- STAGE 2: RISK ASSESSMENT (MODULE 1) ---")
-        risk_assessor = NSSRiskAssessor(resolved_config)
-        risk_report = risk_assessor.run_risk_analysis(analysis_df)
-        # Add total record count to risk report for summary
-        risk_report.get('risk_metrics', {})['total_records'] = len(analysis_df)
-        logger.info("Risk assessment complete.")
-
-        # --- STAGE 3: PRIVACY ENHANCEMENT (MODULE 2) ---
-        logger.info("--- STAGE 3: PRIVACY ENHANCEMENT (MODULE 2) ---")
-        privacy_enhancer = NSSPrivacyEnhancer(resolved_config, risk_report)
-        anonymized_df = privacy_enhancer.anonymize(analysis_df.copy())
+        if survey_type == 'default_survey' and config.pipeline.default_survey:
+            survey_type = config.pipeline.default_survey
+            survey_config_dict = config.surveys.get(survey_type)
+            logger.info(f"Using default survey config: {survey_type}")
         
-        # Create a simple privacy report for Module 4
-        # (This can be enhanced in Module 2 to be more detailed)
-        privacy_report = {
-            "anonymization_strategy": resolved_config.get('privacy_enhancement', {}).get('privacy_strategy'),
-            "quasi_identifiers_processed": risk_report.get('detected_quasi_identifiers'),
-            "goals": resolved_config.get('privacy_enhancement', {}).get('goals'),
-            "anonymization_status": "Success" if not analysis_df.equals(anonymized_df) else "Failed (Data returned unanonymized)"
-        }
-        logger.info("Privacy enhancement complete.")
+        if not survey_config_dict:
+            logger.error(f"Could not find valid config for files in: {input_dir}")
+            return None
 
-        # --- STAGE 4: UTILITY ASSESSMENT (MODULE 3) ---
-        logger.info("--- STAGE 4: UTILITY ASSESSMENT (MODULE 3) ---")
-        utility_assessor = NSSUtilityAssessor(resolved_config)
-        utility_report = utility_assessor.run_utility_analysis(
-            analysis_df,          # The original, clean data
-            anonymized_df,        # The newly anonymized data
-            risk_report.get('detected_quasi_identifiers', [])  # QIs from Module 1
-        )
-        logger.info("Utility assessment complete.")
-
-        # --- STAGE 5: GENERATE FINAL REPORTS (MODULE 4) ---
-        logger.info("--- STAGE 5: GENERATE FINAL REPORTS (MODULE 4) ---")
-        report_generator = NSSReportGenerator(resolved_config)
+        logger.info(f"Processing as survey type: {survey_type}")
         
-        # Generate the consolidated JSON data
-        final_report_data = report_generator.generate_json_report(
-            risk_report,
-            privacy_report,
-            utility_report
-        )
-        logger.info("Consolidated JSON report generated.")
-
-        # --- STAGE 6: SAVING OUTPUTS ---
-        logger.info("--- STAGE 6: SAVING OUTPUTS ---")
-        create_output_directory(output_dir)
-
-        # Save the anonymized data
-        output_format = resolved_config.get('output_format', 'parquet')
-        output_filename = f'anonymized_{survey_type.lower()}_data.{output_format}'
-        output_path = os.path.join(output_dir, output_filename)
-
-        if output_format == 'parquet':
-            anonymized_df.to_parquet(output_path, index=False)
+        # 2. Parse, Clean, Merge (using components)
+        parser = FileParser()
+        cleaner = DataCleaner(survey_config_dict)
+        merger = DataMerger(survey_config_dict)
+        
+        # This part needs to be robust. Assuming simple structure for now.
+        # A real implementation would loop through file types in config
+        
+        # Let's use the DataMerger's logic if available
+        if hasattr(merger, 'merge_data'):
+             # Assuming merge_data handles parsing and cleaning
+            analysis_df = merger.merge_data(input_dir, parser, cleaner)
         else:
-            anonymized_df.to_csv(output_path, index=False)
-        logger.info(f"Anonymized dataset saved to: {output_path}")
+            # Fallback to simple parse/clean of the first file
+            logger.warning("Using simplified ingestion (first file only).")
+            df = parser.parse_file(first_file)
+            analysis_df = cleaner.clean_data(df)
+            
+        if analysis_df is None or analysis_df.empty:
+            logger.error("Data ingestion resulted in an empty DataFrame.")
+            return None
 
-        # Save the consolidated JSON report (for the frontend)
-        report_path_json = os.path.join(output_dir, 'final_pipeline_report.json')
-        with open(report_path_json, 'w') as f:
-            json.dump(final_report_data, f, indent=4, default=str)
-        logger.info(f"Final JSON report saved to: {report_path_json}")
-
-        # Save the consolidated PDF report (for download)
-        report_path_pdf = os.path.join(output_dir, 'final_pipeline_report.pdf')
-        report_generator.save_pdf_report(final_report_data, report_path_pdf)
-        # Logger message for PDF is inside the generator class
-
-        logger.info("==================================================")
-        logger.info(" === NSS SAFEDATA PIPELINE COMPLETED SUCCESSFULLY ===")
-        logger.info("==================================================")
-
-    except FileNotFoundError as fnf:
-        logger.error(f"File Error: {fnf}")
+        logger.info(f"Data ingestion complete. Shape: {analysis_df.shape}")
+        return analysis_df, survey_config_dict
+    
     except Exception as e:
-        logger.error(f"Pipeline failed with an unexpected error: {e}", exc_info=True)
-        raise
+        logger.error(f"Data ingestion failed: {e}", exc_info=True)
+        return None
+
+
+# --- STAGE 2 ---
+def run_stage_2_risk_assessment(
+    analysis_df: pd.DataFrame, 
+    survey_config: Dict[str, Any],
+    ground_truth_file: Optional[Path] # --- NEW ARGUMENT ---
+) -> Dict[str, Any]:
+    """STAGE 2: Assesses k-anonymity risk and runs linkage attack."""
+    # --- UPDATED CALL ---
+    assessor = RiskAssessor(analysis_df, survey_config)
+    risk_report = assessor.assess_risk(ground_truth_file=ground_truth_file)
+    return risk_report
+
+
+# --- STAGE 3 ---
+def run_stage_3_privacy_enhancement(
+    analysis_df: pd.DataFrame, 
+    survey_config: Dict[str, Any], 
+    pipeline_config: PipelineConfig
+) -> pd.DataFrame:
+    """STAGE 3: Applies privacy techniques (k-anonymity, SDG)."""
+    logger.info("--- STAGE 3: PRIVACY ENHANCEMENT (MODULE 2) ---")
+    enhancer = PrivacyEnhancer(analysis_df, survey_config, pipeline_config.privacy_enhancement)
+    anonymized_df = enhancer.enhance_privacy()
+    logger.info("Privacy enhancement complete.")
+    return anonymized_df
+
+
+# --- STAGE 4 ---
+def run_stage_4_utility_assessment(
+    original_df: pd.DataFrame, 
+    anonymized_df: pd.DataFrame, 
+    survey_config: Dict[str, Any]
+) -> Dict[str, Any]:
+    """STAGE 4: Compares utility of original vs. anonymized data."""
+    # --- UPDATED CALL ---
+    # The new UtilityAssessor will be called, which includes distribution checks.
+    assessor = UtilityAssessor(original_df, anonymized_df, survey_config)
+    utility_report = assessor.assess_utility()
+    return utility_report
+
+
+# --- STAGE 5 ---
+def run_stage_5_reporting(
+    risk_report: Dict[str, Any], 
+    utility_report: Dict[str, Any], 
+    output_dir: Path
+):
+    """STAGE 5: Generates the final PDF and JSON reports."""
+    logger.info("--- STAGE 5: REPORTING (MODULE 4) ---")
+    reporter = ReportGenerator(risk_report, utility_report, output_dir)
+    reporter.generate_json_report()
+    reporter.generate_pdf_report()
+    logger.info(f"Reports saved to {output_dir}")
 
 
 def main():
-    """Command line interface for the pipeline."""
-    parser = argparse.ArgumentParser(
-        description='NSS SafeData Pipeline (Ingestion, Risk Assessment, Anonymization, Utility, Reporting)'
+    parser = argparse.ArgumentParser(description="NSS SafeData Pipeline")
+    parser.add_argument(
+        "--input-dir", 
+        type=Path, 
+        required=True, 
+        help="Directory containing input survey data files (CSV, DTA)."
     )
-    parser.add_argument('--input-dir', required=True, help='Directory containing NSS CSV files')
-    parser.add_argument('--output-dir', required=True, help='Directory to save processed data and reports')
-    
-    # Updated default config path to be more standard
-    default_config_path = 'module1_risk_assessment/configs/ingestion_config.yaml'
-    parser.add_argument('--config', default=default_config_path, help=f'Path to the master configuration file (default: {default_config_path})')
-    
-    parser.add_argument('--survey-type', choices=['PLFS', 'HCES', 'ASI', 'EUS'],
-                        help='Override survey type (auto-detect if not provided)')
-
+    parser.add_argument(
+        "--output-dir", 
+        type=Path, 
+        required=True, 
+        help="Directory to save anonymized data and reports."
+    )
+    parser.add_argument(
+        "--config-file", 
+        type=Path, 
+        default=Path(__file__).parent / "module1_risk_assessment/configs/ingestion_config.yaml",
+        help="Path to the main ingestion_config.yaml file."
+    )
+    # --- NEW ARGUMENT ---
+    parser.add_argument(
+        "--ground-truth-file",
+        type=Path,
+        default=None,
+        help="Optional path to a 'ground truth' CSV file for linkage attack simulation."
+    )
     args = parser.parse_args()
-    
-    config_file_path = args.config
-    if not os.path.exists(config_file_path):
-        # Try to find it relative to the script
-        script_dir = os.path.dirname(__file__)
-        alt_path = os.path.join(script_dir, config_file_path)
-        if os.path.exists(alt_path):
-            config_file_path = alt_path
-        else:
-            print(f"Error: Configuration file not found at {args.config} or {alt_path}")
-            return
 
-    run_full_pipeline(args.input_dir, args.output_dir, config_file_path, args.survey_type)
+    try:
+        # Ensure output directory exists
+        args.output_dir.mkdir(parents=True, exist_ok=True)
+        
+        # --- (Existing Stage 0 is renamed to 'Config Loading') ---
+        logger.info("--- PIPELINE STARTING ---")
+        logger.info("--- CONFIG LOADING ---")
+        config = load_pipeline_config(args.config_file)
+        
+        # Initialize common components
+        file_parser = FileParser()
+        survey_detector = SurveyDetector(config)
+
+        # --- RUN NEW STAGE 0 ---
+        config_was_updated = run_stage_0_auto_config(
+            args.input_dir, 
+            args.config_file, 
+            file_parser,
+            survey_detector
+        )
+        
+        # If config was updated, we must reload it to continue
+        if config_was_updated:
+            logger.info("Reloading configuration after auto-detection...")
+            config = load_pipeline_config(args.config_file)
+            survey_detector = SurveyDetector(config) # Re-init detector with new rules
 
 
-if __name__ == '__main__':
+        # --- RUN STAGE 1: INGESTION ---
+        ingestion_result = run_stage_1_data_ingestion(args.input_dir, config, survey_detector)
+        if ingestion_result is None:
+            raise RuntimeError("Data Ingestion failed. See logs for details.")
+        analysis_df, survey_config = ingestion_result
+        
+        # Save original (cleaned, merged) data for reference
+        survey_name = survey_config.get('name', 'survey')
+        original_data_path = args.output_dir / f"original_{survey_name}.parquet"
+        analysis_df.to_parquet(original_data_path)
+        logger.info(f"Saved original cleaned data to {original_data_path}")
+
+        # --- RUN STAGE 2: RISK ASSESSMENT ---
+        risk_report = run_stage_2_risk_assessment(
+            analysis_df, 
+            survey_config,
+            args.ground_truth_file # Pass the new argument
+        )
+
+        # --- RUN STAGE 3: PRIVACY ENHANCEMENT ---
+        anonymized_df = run_stage_3_privacy_enhancement(
+            analysis_df, 
+            survey_config, 
+            config
+        )
+
+        # Save anonymized data
+        anonymized_data_path = args.output_dir / f"anonymized_{survey_name}.parquet"
+        anonymized_df.to_parquet(anonymized_data_path)
+        logger.info(f"Saved anonymized data to {anonymized_data_path}")
+
+        # --- RUN STAGE 4: UTILITY ASSESSMENT ---
+        utility_report = run_stage_4_utility_assessment(
+            analysis_df, 
+            anonymized_df, 
+            survey_config
+        )
+
+        # --- RUN STAGE 5: REPORTING ---
+        run_stage_5_reporting(
+            risk_report, 
+            utility_report, 
+            args.output_dir
+        )
+
+        logger.info("--- PIPELINE COMPLETED SUCCESSFULLY ---")
+
+    except Exception as e:
+        logger.error(f"--- PIPELINE FAILED ---", exc_info=True)
+        sys.exit(1)
+
+
+if __name__ == "__main__":
     main()

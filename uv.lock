@@ -798,6 +798,7 @@ dependencies = [
     { name = "pyyaml" },
     { name = "reportlab" },
     { name = "scikit-learn" },
+    { name = "scipy" },
     { name = "sdv" },
 ]
 
@@ -814,6 +815,7 @@ requires-dist = [
     { name = "pyyaml", specifier = "==6.0.1" },
     { name = "reportlab", specifier = ">=4.4.4" },
     { name = "scikit-learn", specifier = ">=1.7.2" },
+    { name = "scipy", specifier = ">=1.16.2" },
     { name = "sdv", specifier = "==1.1.0" },
 ]
 

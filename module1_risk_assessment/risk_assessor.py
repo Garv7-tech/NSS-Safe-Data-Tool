@@ -1,192 +1,140 @@
-# module1_risk_assessment/risk_assessor.py
-
 import pandas as pd
-from typing import Dict, List, Any, Set
 import logging
-from .utils import setup_logging
-import re # Regular expressions for semantic analysis
+from typing import Dict, Any, List, Optional
+from pathlib import Path
 
-class NSSRiskAssessor:
+logger = logging.getLogger(__name__)
+
+class RiskAssessor:
     """
-    Performs a comprehensive, multi-layered risk analysis on NSS data.
-    - Robust QI Detection using a hybrid approach.
-    - Calculation of various risk metrics.
-    - Simulation of privacy attacks.
-    """
-
-    def __init__(self, config: Dict):
-        """
-        Initialize the assessor with the resolved survey-specific configuration.
-        """
-        self.config = config
-        self.logger = setup_logging(__name__)
-        # Direct Identifiers ko hamesha ignore karna hai
-        self.DIRECT_IDENTIFIERS = {'Person_Serial_No', 'Sample_Household_Number', 'HHID'}
-
-    # LAYER 2: Semantic Analysis
-    def _is_semantic_qi_candidate(self, column_name: str) -> bool:
-        """
-        Analyzes the column name to guess if it's a potential QI.
-        यह Column के नाम से अंदाज़ा लगाता है कि क्या वह QI हो सकता है।
-        """
-        # Common QI patterns in names (case-insensitive)
-        qi_name_patterns = [
-            'age', 'sex', 'gender', 'district', 'state', 'region', 'code',
-            'status', 'level', 'sector', 'type', 'group', 'religion'
-        ]
-        # Check if any pattern exists in the column name
-        for pattern in qi_name_patterns:
-            if re.search(pattern, column_name, re.IGNORECASE):
-                return True
-        return False
-
-    # LAYER 3: Statistical Analysis
-    def _get_statistical_qi_score(self, column: pd.Series) -> float:
-        """
-        Calculates a "QI-ness" score for a column based on its data.
-        यह Column के डेटा के आधार पर 0 से 1 के बीच एक "QI स्कोर" देता है।
-        """
-        total_rows = len(column)
-        unique_values = column.nunique()
-
-        # Rule 1: Ignore columns that are unique keys or have only one value.
-        if unique_values <= 1 or unique_values >= total_rows * 0.95:
-            return 0.0
-
-        # Rule 2: High score for categorical data with low to medium cardinality.
-        # (e.g., State, District, Social_Group)
-        if pd.api.types.is_categorical_dtype(column.dtype) or pd.api.types.is_object_dtype(column.dtype):
-            # 2 to 100 categories is a strong indicator of a QI
-            if 2 < unique_values < 100:
-                return 0.9
-            else:
-                return 0.5 # Still a candidate, but weaker
-
-        # Rule 3: Score for numerical data based on uniqueness ratio.
-        # (e.g., Age, Household_Size)
-        if pd.api.types.is_numeric_dtype(column.dtype):
-            uniqueness_ratio = unique_values / total_rows
-            # Columns with 1% to 30% unique values are strong candidates.
-            if 0.01 < uniqueness_ratio < 0.30:
-                return 0.8
-            # Weaker candidates
-            elif 0.30 <= uniqueness_ratio < 0.60:
-                return 0.4
-
-        return 0.0 # Default: Not a QI
-
-    # Main Detection Method
-    def detect_quasi_identifiers(self, df: pd.DataFrame, score_threshold: float = 0.35) -> List[str]:
-        """
-        Detects QIs using the 3-layer hybrid approach.
-        """
-        self.logger.info("--- Starting Robust QI Detection (3-Layer Hybrid Approach) ---")
-        final_qi_set: Set[str] = set()
-
-        # LAYER 1: Get candidates from ingestion_config.yaml
-        risk_config = self.config.get('risk_assessment', {})
-        qi_candidates_config = risk_config.get('quasi_identifier_candidates', {})
-        common_qis = qi_candidates_config.get('common', [])
-        survey_type = self.config.get('survey_type_detected')
-        survey_specific_qis = qi_candidates_config.get('survey_specific', {}).get(survey_type, [])
-        config_based_qis = {col for col in (common_qis + survey_specific_qis) if col in df.columns}
-        final_qi_set.update(config_based_qis)
-        self.logger.info(f"[Layer 1] Found {len(config_based_qis)} QIs from config: {list(config_based_qis)}")
-
-        # Layers 2 & 3: Semantic and Statistical Analysis
-        self.logger.info(f"[Layers 2 & 3] Analyzing all columns with a score threshold of {score_threshold}...")
-        for col_name in df.columns:
-            if col_name in final_qi_set or col_name in self.DIRECT_IDENTIFIERS:
-                continue # Skip if already found or it's a direct ID
-
-            # Layer 2 Check
-            is_semantic_candidate = self._is_semantic_qi_candidate(col_name)
-
-            # Layer 3 Check
-            statistical_score = self._get_statistical_qi_score(df[col_name])
-
-            # Combine scores - Semantic match gives a boost
-            final_score = statistical_score
-            if is_semantic_candidate:
-                final_score += 0.2 # Bonus points for a good name
-
-            if final_score > score_threshold:
-                final_qi_set.add(col_name)
-                self.logger.info(f"  -> Detected '{col_name}' | Semantic Match: {is_semantic_candidate} | Final Score: {final_score:.2f}")
-
-        detected_qis = sorted(list(final_qi_set))
-        self.logger.info(f"--- Total QIs Detected: {len(detected_qis)} -> {detected_qis} ---")
-        return detected_qis
-
-    def calculate_k_anonymity(self, df: pd.DataFrame, qi_columns: List[str]) -> int:
-        # (यह function पहले जैसा ही रहेगा)
-        if df.empty or not qi_columns: return 0
-        return int(df.groupby(qi_columns).size().min())
-
-    def run_risk_analysis(self, df: pd.DataFrame) -> Dict[str, Any]:
-        """
-        Runs the full risk analysis pipeline.
-        """
-        self.logger.info("--- Starting Initial Risk Analysis ---")
-        detected_qis = self.detect_quasi_identifiers(df)
-        k_anonymity_score = self.calculate_k_anonymity(df, detected_qis)
-
-        risk_report = {
-            'detected_quasi_identifiers': detected_qis,
-            'risk_metrics': {
-                'k_anonymity': k_anonymity_score
-            }
-        }
-        self.logger.info(f"Risk analysis report: {risk_report}")
-        return risk_report
+    Assesses the re-identification risk of a given dataset.
     
-    def simulate_linkage_attack(self, df: pd.DataFrame, qi_columns: List[str]) -> Dict[str, Any]:
-        """
-        Simulates a linkage attack to calculate the re-identification risk.
-        """
-        self.logger.info(f"--- Starting Linkage Attack Simulation on QIs: {qi_columns} ---")
-
-        if not qi_columns:
-            self.logger.warning("No QIs provided for attack simulation.")
-            return {}
-
-        # Step 1: Create a fake "Attacker's Dataset".
-        # We take a random 20% sample from the original data to act as the public dataset.
-        attacker_df = df[qi_columns].sample(frac=0.2, random_state=42).drop_duplicates()
-        attacker_df['attacker_identifier'] = [f'Person_{i}' for i in range(len(attacker_df))]
-        self.logger.info(f"Created a fake Attacker's Dataset with {len(attacker_df)} unique records.")
-
-        # Step 2: Perform the linkage (merge).
-        # We count how many groups in the original data are unique (k=1).
-        # These are the most vulnerable individuals.
-        equivalence_classes = df.groupby(qi_columns).size().reset_index(name='k_value')
-        vulnerable_groups = equivalence_classes[equivalence_classes['k_value'] == 1]
-
-        # The attack links the attacker's data with these vulnerable groups.
-        successful_links = pd.merge(vulnerable_groups, attacker_df, on=qi_columns)
-        
-        # Step 3: Measure the success.
-        total_records = len(df)
-        vulnerable_records = len(vulnerable_groups)
-        reidentified_records = len(successful_links)
-
-        # Calculate re-identification rate (from the attacker's perspective)
-        if not attacker_df.empty:
-            reidentification_rate = (reidentified_records / len(attacker_df)) * 100
-        else:
-            reidentification_rate = 0
-
-        self.logger.info(f"Total Records in original data: {total_records}")
-        self.logger.info(f"Records that are unique (k=1) and vulnerable: {vulnerable_records}")
-        self.logger.info(f"Records successfully re-identified in the attack: {reidentified_records}")
-        self.logger.info(f"Re-identification Rate: {reidentification_rate:.2f}%")
-
-        simulation_report = {
-            'attack_qis': qi_columns,
-            'total_records': total_records,
-            'vulnerable_records_k1': vulnerable_records,
-            'reidentified_records': reidentified_records,
-            'reidentification_rate_percent': round(reidentification_rate, 2)
+    New in this version:
+    - Includes `simulate_linkage_attack` to fulfill PS-1.pdf requirement.
+    """
+    def __init__(self, analysis_df: pd.DataFrame, survey_config: Dict[str, Any]):
+        self.df = analysis_df
+        self.config = survey_config
+        # Get QIs from config, default to empty list if not specified
+        self.quasi_identifiers: List[str] = self.config.get('quasi_identifiers', [])
+        self.report: Dict[str, Any] = {
+            'risk_metrics': {},
+            'attack_simulation': {}
         }
 
-        return simulation_report
+    def _calculate_k_anonymity(self) -> Dict[str, Any]:
+        """Calculates k-anonymity based on the configured quasi-identifiers."""
+        if not self.quasi_identifiers:
+            logger.warning("No quasi-identifiers specified in config. Skipping k-anonymity calculation.")
+            return {
+                'status': 'skipped', 
+                'reason': 'No quasi-identifiers specified'
+            }
+            
+        logger.info(f"Calculating k-anonymity using QIs: {self.quasi_identifiers}")
+        
+        # Check if all QIs are in the dataframe
+        missing_qis = [qi for qi in self.quasi_identifiers if qi not in self.df.columns]
+        if missing_qis:
+            logger.error(f"Missing QIs in DataFrame, cannot assess risk: {missing_qis}")
+            return {'status': 'failed', 'error': f'Missing QIs: {missing_qis}'}
+
+        # Calculate equivalence class sizes
+        try:
+            equiv_class_sizes = self.df.groupby(self.quasi_identifiers).size()
+            min_k = equiv_class_sizes.min()
+            
+            # Count records at risk (k=1)
+            vulnerable_records_count = int((equiv_class_sizes == 1).sum())
+            total_records = len(self.df)
+            vulnerable_percentage = (vulnerable_records_count / total_records) * 100 if total_records > 0 else 0
+
+            logger.info(f"Minimum k-anonymity: {min_k}")
+            logger.info(f"Vulnerable records (k=1): {vulnerable_records_count} ({vulnerable_percentage:.2f}%)")
+
+            return {
+                'status': 'success',
+                'min_k': int(min_k),
+                'vulnerable_records_count': vulnerable_records_count,
+                'vulnerable_records_percentage': round(vulnerable_percentage, 2),
+                'total_records': total_records,
+                'quasi_identifiers_used': self.quasi_identifiers
+            }
+        except Exception as e:
+            logger.error(f"Failed to calculate k-anonymity: {e}", exc_info=True)
+            return {'status': 'failed', 'error': str(e)}
+
+    def simulate_linkage_attack(self, ground_truth_file: Path) -> Dict[str, Any]:
+        """
+        Simulates a linkage attack using an external "ground truth" file.
+        This file is assumed to have QIs and one or more true identifiers
+        (e.g., Name, PII).
+        """
+        logger.info(f"--- Starting Linkage Attack Simulation ---")
+        logger.info(f"Loading ground truth file from: {ground_truth_file}")
+        
+        try:
+            # We assume the ground truth file is a CSV
+            ground_truth_df = pd.read_csv(ground_truth_file)
+        except Exception as e:
+            logger.error(f"Failed to load ground truth file: {e}")
+            return {'status': 'failed', 'error': str(e)}
+
+        # Identify QIs present in *both* datasets
+        common_qis = [qi for qi in self.quasi_identifiers if qi in ground_truth_df.columns]
+        if not common_qis:
+            logger.warning("No common QIs found between survey data and ground truth file. Skipping attack.")
+            return {'status': 'skipped', 'reason': 'No common QIs'}
+
+        logger.info(f"Attacking using common QIs: {common_qis}")
+
+        # Perform the linkage attack (a simple inner merge on the QIs)
+        try:
+            # Drop duplicates from ground truth to avoid ambiguity
+            attacker_df = ground_truth_df[common_qis].drop_duplicates()
+            
+            # Count how many unique groups in our data match the attacker's data
+            merged = self.df[common_qis].merge(attacker_df, on=common_qis, how='inner')
+            
+            # Count records successfully re-identified
+            # This counts unique *individuals* in the original data that were linked
+            linked_record_count = merged.drop_duplicates().shape[0]
+            total_records = len(self.df)
+            linked_percentage = (linked_record_count / total_records) * 100 if total_records > 0 else 0
+
+            logger.info(f"Attack successful: {linked_record_count} records re-identified.")
+
+            return {
+                'status': 'success',
+                'common_qis_used': common_qis,
+                'linked_record_count': int(linked_record_count),
+                'total_records': total_records,
+                're_identification_percentage': round(linked_percentage, 2)
+            }
+        except Exception as e:
+            logger.error(f"Linkage attack simulation failed: {e}", exc_info=True)
+            return {'status': 'failed', 'error': str(e)}
+
+    def assess_risk(self, ground_truth_file: Optional[Path] = None) -> Dict[str, Any]:
+        """
+        Runs all risk assessment tasks.
+        Now includes the optional linkage attack.
+        """
+        logger.info("--- STAGE 2: RISK ASSESSMENT (MODULE 1) ---")
+        
+        # 1. Calculate k-anonymity (original functionality)
+        self.report['risk_metrics'] = self._calculate_k_anonymity()
+        
+        # 2. Simulate linkage attack (new functionality)
+        if ground_truth_file:
+            if ground_truth_file.exists():
+                self.report['attack_simulation'] = self.simulate_linkage_attack(ground_truth_file)
+            else:
+                logger.warning(f"Ground truth file specified but not found: {ground_truth_file}")
+                self.report['attack_simulation'] = {'status': 'skipped', 'reason': 'File not found'}
+        else:
+            logger.info("No ground truth file provided, skipping linkage attack simulation.")
+            self.report['attack_simulation'] = {'status': 'skipped', 'reason': 'Not provided'}
+
+        logger.info("Risk assessment complete.")
+        return self.report
