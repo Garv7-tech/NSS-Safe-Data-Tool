@@ -4,6 +4,7 @@ This script orchestrates the full pipeline:
 1. Data Ingestion (Parsing, Cleaning, Merging)
 2. Risk Assessment (Module 1: QI Detection & Risk Scoring)
 3. Privacy Enhancement (Module 2: Anonymization)
+4. Utility Assessment (Module 3: Utility Measurement)
 """
 
 import argparse
@@ -15,7 +16,6 @@ import pandas as pd
 import logging
 
 # --- Imports from Module 1 ---
-# Note the new import paths now that main.py is in the root
 from module1_risk_assessment.data_ingestion.file_parser import NSSCSVParser
 from module1_risk_assessment.data_ingestion.data_cleaner import NSSDataCleaner
 from module1_risk_assessment.data_ingestion.data_merger import NSSDataMerger
@@ -26,13 +26,15 @@ from module1_risk_assessment.risk_assessor import NSSRiskAssessor
 # --- Imports from Module 2 ---
 from module2_privacy_enhancement.privacy_enhancer import NSSPrivacyEnhancer
 
+# --- Imports from Module 3 ---
+from module3_utility_assessment.utility_assessor import NSSUtilityAssessor
 
 
 def run_full_pipeline(input_dir: str, output_dir: str, config_path: str, survey_type: str = None):
     """
-    Runs the complete data processing, risk assessment, and privacy enhancement pipeline.
+    Runs the complete data processing, risk assessment, privacy enhancement, and utility pipeline.
     """
-    
+
     # Use the logging setup from the utils
     logger = setup_logging(__name__)
     logger.info("==================================================")
@@ -64,12 +66,10 @@ def run_full_pipeline(input_dir: str, output_dir: str, config_path: str, survey_
 
         # --- STAGE 1: DATA INGESTION AND CLEANING ---
         logger.info("--- STAGE 1: DATA INGESTION ---")
-        
-        # Initialize data ingestion components
-        parser = NSSCSVParser.__new__(NSSCSVParser) # Create without calling __init__
-        parser.config = resolved_config # Inject resolved config
-        parser.logger = setup_logging(parser.__class__.__name__)
-        
+
+        # Initialize data ingestion components (Simplified)
+        # (This assumes you've updated NSSCSVParser's __init__ to accept the config dict)
+        parser = NSSCSVParser(resolved_config)
         cleaner = NSSDataCleaner(resolved_config)
         merger = NSSDataMerger(resolved_config)
 
@@ -86,7 +86,7 @@ def run_full_pipeline(input_dir: str, output_dir: str, config_path: str, survey_
             raise FileNotFoundError(f"No household files found in {input_dir} with patterns: {household_patterns}")
         household_file = str(household_files[0])
         logger.info(f"Processing household file: {household_file}")
-        
+
         household_df = parser.read_csv_file(household_file, 'household')
         household_df = cleaner.clean_dataframe(household_df, 'household')
 
@@ -116,24 +116,33 @@ def run_full_pipeline(input_dir: str, output_dir: str, config_path: str, survey_
         # --- STAGE 3: PRIVACY ENHANCEMENT (MODULE 2) ---
         logger.info("--- STAGE 3: PRIVACY ENHANCEMENT (MODULE 2) ---")
         privacy_enhancer = NSSPrivacyEnhancer(resolved_config, risk_report)
-        # Use .copy() to avoid modifying the original dataframe
         anonymized_df = privacy_enhancer.anonymize(analysis_df.copy())
         logger.info("Privacy enhancement complete.")
 
-        # --- STAGE 4: SAVING OUTPUTS ---
-        logger.info("--- STAGE 4: SAVING OUTPUTS ---")
+        # --- STAGE 4: UTILITY ASSESSMENT (MODULE 3) ---
+        logger.info("--- STAGE 4: UTILITY ASSESSMENT (MODULE 3) ---")
+        utility_assessor = NSSUtilityAssessor(resolved_config)
+        utility_report = utility_assessor.run_utility_analysis(
+            analysis_df,          # The original, clean data
+            anonymized_df,        # The newly anonymized data
+            risk_report.get('detected_quasi_identifiers', [])  # QIs from Module 1
+        )
+        logger.info(f"Utility Assessment Report: \n{json.dumps(utility_report, indent=2, default=str)}")
+
+        # --- STAGE 5: SAVING OUTPUTS ---
+        logger.info("--- STAGE 5: SAVING OUTPUTS ---")
         create_output_directory(output_dir)
 
         # Save the anonymized data
         output_format = resolved_config.get('output_format', 'parquet')
         output_filename = f'anonymized_{survey_type.lower()}_data.{output_format}'
         output_path = os.path.join(output_dir, output_filename)
-        
+
         if output_format == 'parquet':
             anonymized_df.to_parquet(output_path, index=False)
         else:
             anonymized_df.to_csv(output_path, index=False)
-            
+
         logger.info(f"Anonymized dataset saved to: {output_path}")
 
         # Save the risk report
@@ -142,6 +151,13 @@ def run_full_pipeline(input_dir: str, output_dir: str, config_path: str, survey_
         with open(report_path, 'w') as f:
             json.dump(risk_report, f, indent=4)
         logger.info(f"Risk report saved to: {report_path}")
+
+        # Save the utility report
+        utility_report_filename = f'utility_report_{survey_type.lower()}.json'
+        utility_report_path = os.path.join(output_dir, utility_report_filename)
+        with open(utility_report_path, 'w') as f:
+            json.dump(utility_report, f, indent=4, default=str)
+        logger.info(f"Utility report saved to: {utility_report_path}")
 
         logger.info("==================================================")
         logger.info(" === NSS SAFEDATA PIPELINE COMPLETED SUCCESSFULLY ===")
@@ -153,18 +169,21 @@ def run_full_pipeline(input_dir: str, output_dir: str, config_path: str, survey_
         logger.error(f"Pipeline failed with an unexpected error: {e}", exc_info=True)
         raise
 
+
 def main():
     """Command line interface for the pipeline."""
-    parser = argparse.ArgumentParser(description='NSS SafeData Pipeline (Ingestion, Risk Assessment, Anonymization)')
+    parser = argparse.ArgumentParser(
+        description='NSS SafeData Pipeline (Ingestion, Risk Assessment, Anonymization)'
+    )
     parser.add_argument('--input-dir', required=True, help='Directory containing NSS CSV files')
-    parser.add_argument('--output-dir', required=True, help='Directory to save processed and anonymized data')
+    parser.add_Fargument('--output-dir', required=True, help='Directory to save processed and anonymized data')
     parser.add_argument('--config', default='configs/ingestion_config.yaml', help='Path to the master configuration file')
-    parser.add_argument('--survey-type', choices=['PLFS', 'HCES', 'ASI', 'EUS'], help='Override survey type (auto-detect if not provided)')
-    
+    parser.add_argument('--survey-type', choices=['PLFS', 'HCES', 'ASI', 'EUS'],
+                        help='Override survey type (auto-detect if not provided)')
+
     args = parser.parse_args()
-    
     run_full_pipeline(args.input_dir, args.output_dir, args.config, args.survey_type)
+
 
 if __name__ == '__main__':
     main()
-

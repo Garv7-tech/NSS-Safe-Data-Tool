@@ -17,7 +17,7 @@ surveys:
         file_patterns: ['*hhv*.csv', '*hh*.csv', '*household*.csv']
         required_columns:
           - 'Panel'
-          - 'Sample_Household_Number' 
+          - 'Sample_Household_Number'
           - 'State_Ut_Code'
           - 'District_Code'
         identifier_columns:
@@ -41,7 +41,7 @@ surveys:
           Monthly_Consumer_Expenditure: {min: 0, max: 100000}
         categorical_mappings:
           Sector: {1: 'Rural', 2: 'Urban'}
-          
+
       person:
         file_patterns: ['*perv*.csv', '*per*.csv', '*person*.csv', '*individual*.csv']
         required_columns:
@@ -52,7 +52,7 @@ surveys:
           - 'Sex'
         identifier_columns:
           - 'Panel'
-          - 'Sample_Household_Number' 
+          - 'Sample_Household_Number'
           - 'Person_Serial_No'
         dtypes:
           Panel: 'category'
@@ -82,7 +82,7 @@ surveys:
           - 'Stratum'
         identifier_columns:
           - 'HHID'
-          - 'State_Code' 
+          - 'State_Code'
           - 'District'
           - 'Stratum'
         dtypes:
@@ -96,7 +96,7 @@ surveys:
         range_validation:
           Household_Size: {min: 1, max: 25}
           MPCE: {min: 0, max: 50000}
-          
+
       consumption:
         file_patterns: ['*cons*.csv', '*expenditure*.csv', '*item*.csv']
         required_columns: ['HHID', 'Item_Code', 'Value']
@@ -115,7 +115,7 @@ surveys:
         required_columns:
           - 'DSL'
           - 'State'
-          - 'District' 
+          - 'District'
           - 'NIC_Code'
         identifier_columns: ['DSL', 'State', 'District']
         dtypes:
@@ -141,7 +141,7 @@ surveys:
           NSS_Region: 'int16'
         categorical_mappings:
           Sector: {1: 'Rural', 2: 'Urban'}
-          
+
       person:
         file_patterns: ['*perv*.csv', '*person*.csv']
         required_columns: ['HHID', 'Person_No', 'Age', 'Sex']
@@ -163,38 +163,38 @@ merge_strategies:
     survey_specific:
       PLFS: ['Panel', 'Sample_Household_Number', 'State_Ut_Code', 'District_Code']
       HCES: ['HHID', 'State_Code', 'District']
-      ASI: ['DSL', 'State', 'District'] 
+      ASI: ['DSL', 'State', 'District']
       EUS: ['HHID', 'State', 'District']
-      
+
   household_consumption:
     default_keys: ['HHID']
     survey_specific:
       HCES: ['HHID']
 
-# Common analysis columns across surveys  
+# Common analysis columns across surveys
 analysis_columns:
   core_identifiers:
     PLFS: ['Panel', 'Sample_Household_Number', 'Person_Serial_No']
     HCES: ['HHID', 'Person_Serial_No']
     ASI: ['DSL', 'Factory_Serial_No']
     EUS: ['HHID', 'Person_No']
-    
+
   demographics:
     common: ['Age', 'Sex', 'Marital_Status', 'Social_Group']
     survey_specific:
       PLFS: ['Age', 'Sex', 'Marital_Status', 'Social_Group', 'General_Education_Level']
       HCES: ['Age', 'Sex', 'Marital_Status', 'Social_Group']
-      
+
   household_characteristics:
     common: ['Household_Size', 'Sector', 'State_Code']
     survey_specific:
       PLFS: ['Household_Size', 'Household_Type', 'Monthly_Consumer_Expenditure']
       HCES: ['Household_Size', 'MPCE', 'Religion']
-      
+
   employment:
     PLFS: ['Principal_Status_Code', 'Principal_Industry_Code', 'Principal_Occupation_Code']
     EUS: ['Principal_Activity_Status', 'Principal_Industry', 'Principal_Occupation']
-    
+
   expenditure:
     HCES: ['Item_Code', 'Value', 'Quantity', 'Type']
 
@@ -202,10 +202,10 @@ analysis_columns:
 survey_detection:
   file_patterns:
     PLFS: ['*perv*.csv', '*hhv*.csv', 'PLFS', 'plfs']
-    HCES: ['*cons*.csv', '*expenditure*.csv', 'HCES', 'hces'] 
+    HCES: ['*cons*.csv', '*expenditure*.csv', 'HCES', 'hces']
     ASI: ['*factory*.csv', '*industry*.csv', 'ASI', 'asi']
     EUS: ['*block*.csv', 'EUS', 'eus']
-    
+
   column_signatures:
     PLFS: ['Panel', 'Sample_Household_Number', 'Person_Serial_No']
     HCES: ['HHID', 'MPCE', 'Item_Code']
@@ -218,32 +218,31 @@ file_processing:
   supported_formats: ['csv', 'txt', 'dat']
   auto_detect_delimiter: true
   delimiter_candidates: [',', '|', '\t', ';']
-  
+
 # Data quality checks
 quality_checks:
   duplicate_detection:
     enabled: true
     key_combinations: ['identifier_columns']
-    
+
   missing_data_threshold: 0.9  # Flag if >90% missing in any column
-  
+
   outlier_detection:
     enabled: true
     methods: ['iqr', 'z_score']
-    
+
   referential_integrity:
     enabled: true
     check_merge_keys: true
 
-# Output settings  
+# Output settings
 output:
   save_intermediate: true
   intermediate_formats: ['parquet']
   final_formats: ['parquet', 'csv']
   include_metadata: true
   create_data_dictionary: true
-
-
+  
 # ===============================================================
 # == MODULE 1 & 2 CONFIGURATIONS START HERE ==
 # ===============================================================
@@ -275,7 +274,42 @@ privacy_enhancement:
   goals:
     k_anonymity:
       target_k: 10
-      max_info_loss: 0.25 # Max 25% info loss allowed (using NCP metric)
-    
+      max_info_loss: 0.25  # Max 25% info loss allowed (using NCP metric)
     differential_privacy:
       epsilon: 1.0
+
+# ===============================================================
+# == MODULE 3 CONFIGURATIONS START HERE ==
+# ===============================================================
+
+# Utility Assessment Configuration (For Module 3)
+utility_assessment:
+  # List of numeric columns to use for statistical and correlation comparisons.
+  # These should be columns that are important for analysis.
+  # Note: The assessor will auto-convert anonymized ranges (e.g., '20-30')
+  # to their midpoints (e.g., 25.0) for these calculations.
+  numeric_columns_to_compare:
+    - 'Age'
+    - 'Household_Size'
+    - 'Monthly_Consumer_Expenditure'
+
+  # Configuration for the Machine Learning (ML) utility test.
+  # This trains a model on the original and anonymized data to
+  # see how much predictive power was lost.
+  ml_model:
+    # 'regression' (for predicting a number) or 
+    # 'classification' (for predicting a category)
+    task_type: 'regression'
+
+    # The single column you want to predict.
+    # Must be a numeric column.
+    target_column: 'Monthly_Consumer_Expenditure'
+
+    # A list of columns to use as features to predict the target.
+    # Can be a mix of numeric and categorical columns.
+    feature_columns:
+      - 'Age'
+      - 'Sex'
+      - 'Social_Group'
+      - 'Household_Size'
+      - 'District_Code'

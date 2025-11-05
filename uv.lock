@@ -712,6 +712,7 @@ dependencies = [
     { name = "pyarrow" },
     { name = "pytest" },
     { name = "pyyaml" },
+    { name = "scikit-learn" },
     { name = "sdv" },
 ]
 
@@ -724,6 +725,7 @@ requires-dist = [
     { name = "pyarrow", specifier = "==16.1.0" },
     { name = "pytest", specifier = "==8.2.2" },
     { name = "pyyaml", specifier = "==6.0.1" },
+    { name = "scikit-learn", specifier = ">=1.7.2" },
     { name = "sdv", specifier = "==1.1.0" },
 ]
 
