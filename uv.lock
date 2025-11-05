@@ -802,6 +802,12 @@ dependencies = [
     { name = "sdv" },
 ]
 
+[package.dev-dependencies]
+dev = [
+    { name = "pytest" },
+    { name = "pytest-mock" },
+]
+
 [package.metadata]
 requires-dist = [
     { name = "diffprivlib", specifier = "==0.6.1" },
@@ -817,6 +823,12 @@ requires-dist = [
     { name = "scikit-learn", specifier = ">=1.7.2" },
     { name = "scipy", specifier = ">=1.16.2" },
     { name = "sdv", specifier = "==1.1.0" },
+]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "pytest", specifier = ">=8.2.2" },
+    { name = "pytest-mock", specifier = ">=3.15.1" },
 ]
 
 [[package]]
